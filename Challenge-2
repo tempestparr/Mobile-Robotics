@@ -1,0 +1,218 @@
+#pragma config(Sensor, S1,     colorLeft,      sensorNone)
+#pragma config(Sensor, S2,     sonar,          sensorNone)
+#pragma config(Sensor, S4,     colorRight,     sensorNone)
+#pragma config(Motor,  motorA,          motorLeft,     tmotorEV3_Large, PIDControl, encoder)
+#pragma config(Motor,  motorD,          motorRight,    tmotorEV3_Large, PIDControl, encoder)
+
+#define DEFAULT_MOTOR_SPEED 25
+#define TURN_MOTOR_SPEED 50
+#define LINE_FOLLOW_MOTOR_SPEED 35
+#define WANDER_CONSTANT 10
+#define NUM_READINGS 5					//Sensor calibration readings
+#define ALPHA_SONAR 0.9					//Constant in sonar EWMA filter
+#define ALPHA_COLOR 0.6					//Consatnt in color EWMA filter
+#define MIN_APPROACH_SPEED 15		//Determines speed of the robots final approach
+#define MIN_DIST 4							//Distance that robot will stop at from an obstacle
+#define WHITE_THRESHOLD 20			//Value in which sensors consider > reading 'WHITE'
+#define BLACK_THRESHOLD 20			//Value in which sensors consider < reading 'BLACK'
+#define MIN_COLOR_READING 0
+#define MAX_COLOR_READING 100
+
+/**
+* Brain struct for representing robot's various states.
+*/
+typedef struct {
+	short leftMotorSpeed;
+	short rightMotorSpeed;
+	float currentDistance;
+	float leftColor;
+	float rightColor;
+	short white;
+	short black;
+	bool isFollowing;
+	bool wasFollowing;
+} Brain;
+
+/**
+ * Calibrates sonar and color sensors on robot. Takes an average reading of sonar
+ * up to a set NUM_READINGS. Assumes robot is starting on white and sets average
+ * color readings to WHITE.
+ */
+void calibrateSensors(Brain brain) {
+	float avgDist = 0;
+	int i;
+	for (i = 0; i < NUM_READINGS; i++) {
+		avgDist = avgDist + SensorValue[sonar];
+		sleep(10);
+	}
+	brain.currentDistance = avgDist / NUM_READINGS;
+	brain.leftColor = MAX_COLOR_READING;		//Starts average off at max (white)
+	brain.rightColor = MAX_COLOR_READING;		//Starts average off at max (white)
+}
+
+/**
+* Implementation of the EWMA filtering algorithm. Sonar readings are
+* are averaged with previous reading averages.
+*/
+void getFilteredSonar(Brain brain) {
+	int reading = SensorValue[sonar];
+	brain.currentDistance = reading + ALPHA_SONAR * (brain.currentDistance - reading);
+}
+
+/**
+* Implementation of the EWMA filtering algorithm. Color readings are
+* are averaged with previous reading averages.
+*/
+void getFilteredColor(Brain brain) {
+	int readingLeft = getColorReflected(colorLeft);
+	int readingRight = getColorReflected(colorRight);
+	brain.leftColor = readingLeft + ALPHA_COLOR * (brain.leftColor - readingLeft);
+	brain.rightColor = readingRight + ALPHA_COLOR * (brain.rightColor - readingRight);
+}
+
+/**
+* Utility function for changing the robots current motor speeds.
+*/
+void setRobotSpeed(short leftPower, short rightPower, int pause) {
+	setMotorSpeed(motorLeft, leftPower);
+	setMotorSpeed(motorRight, rightPower);
+	sleep(pause);
+}
+
+/*
+	Function to simulate a 'drunken' wander in a general direction.
+		params: brain -> robot's state object
+*/
+void wanderMotion(Brain brain) {
+	int direction = abs(rand() % 15);
+	if (direction < 5) {
+		brain.leftMotorSpeed = DEFAULT_MOTOR_SPEED + WANDER_CONSTANT + abs(rand() % 30);
+		brain.rightMotorSpeed = DEFAULT_MOTOR_SPEED;
+	}
+	else if (direction < 10) {
+		brain.rightMotorSpeed = DEFAULT_MOTOR_SPEED + WANDER_CONSTANT + abs(rand() % 30);
+		brain.leftMotorSpeed = DEFAULT_MOTOR_SPEED;
+	}
+}
+
+void checkForObstacles(Brain brain) {
+		getFilteredSonar(brain);
+		while (brain.currentDistance <= 90) {
+			getFilteredSonar(brain);
+			brain.leftMotorSpeed = brain.currentDistance + MIN_APPROACH_SPEED;
+			brain.rightMotorSpeed = brain.currentDistance + MIN_APPROACH_SPEED; // same speed for both motors
+
+			playTone(brain.currentDistance * 30, 1);
+			// Approach until 5cm
+			if (brain.currentDistance < MIN_DIST) {
+				setLEDColor(ledGreen);
+				// Stop for 500ms
+				brain.leftMotorSpeed = 0;
+				brain.rightMotorSpeed = 0;
+				setRobotSpeed(brain.leftMotorSpeed, brain.rightMotorSpeed, 500);
+
+				// Reverse so it does not hit object
+				brain.leftMotorSpeed = -25;
+				brain.rightMotorSpeed = -25;
+				setRobotSpeed(brain.leftMotorSpeed, brain.rightMotorSpeed, 500);
+
+				// Turn away from object
+				int randomTurn = random(1);
+				if(randomTurn) {
+					setRobotSpeed(TURN_MOTOR_SPEED * -1, TURN_MOTOR_SPEED, 450);
+				} else {
+					setRobotSpeed(TURN_MOTOR_SPEED, TURN_MOTOR_SPEED * -1, 450);
+				}
+			}
+			brain.isFollowing = true;
+			setRobotSpeed(brain.leftMotorSpeed, brain.rightMotorSpeed, 0);
+		}
+}
+
+bool senseBlackLine(Brain brain) {
+		getFilteredColor(brain);
+		displayBigTextLine(2, "Left: %d", brain.leftColor);
+		displayBigTextLine(4, "Right: %d", brain.rightColor);
+		return brain.leftColor < BLACK_THRESHOLD || brain.rightColor < BLACK_THRESHOLD;
+}
+
+task main()
+{
+	Brain brain;
+	brain.leftMotorSpeed = DEFAULT_MOTOR_SPEED;
+	brain.rightMotorSpeed = DEFAULT_MOTOR_SPEED;
+	brain.isFollowing = true;
+	brain.wasFollowing = false;
+	calibrateSensors(brain);
+	setLEDColor(ledGreenPulse);
+	while(true) {
+		//Check for obstacles
+		checkForObstacles(brain);
+
+		//Read and filter both color sensors
+		getFilteredColor(brain);
+
+		//Left and Right read BLACK. Go straight
+		if (brain.leftColor < BLACK_THRESHOLD && brain.rightColor < BLACK_THRESHOLD) {
+			setLEDColor(ledGreen);
+			setRobotSpeed(DEFAULT_MOTOR_SPEED, DEFAULT_MOTOR_SPEED, 0);
+			brain.isFollowing = false;
+		}
+		//Left reads BLACK, Right reads WHITE. Turn left
+		else if (brain.leftColor < BLACK_THRESHOLD && brain.rightColor > WHITE_THRESHOLD) {
+				setRobotSpeed(0, LINE_FOLLOW_MOTOR_SPEED, 100);
+		}
+		//Left reads WHITE, Right reads BLACK. Turn right
+		else if (brain.leftColor > WHITE_THRESHOLD && brain.rightColor < BLACK_THRESHOLD) {
+				setRobotSpeed(LINE_FOLLOW_MOTOR_SPEED, 0, 100);
+		}
+		//Left and Right read WHITE. Wander
+		else {
+			if (!brain.isFollowing) {
+					//Pause and sweep left
+					//setRobotSpeed(0, 0, 300);
+					for (int i = 0; i < 5; i++){
+						setRobotSpeed(-25, 25, 100);
+						getFilteredColor(brain);
+						if (senseBlackLine(brain)) {
+							break;
+						}
+					}
+					//setRobotSpeed(0, 0, 300);
+
+					//Sweep right if no line is found
+					if (!senseBlackLine(brain)) {
+						setRobotSpeed(25, -25, 500);
+						for (int i = 0; i < 5; i++){
+							setRobotSpeed(25, -25, 100);
+							getFilteredColor(brain);
+							if (senseBlackLine(brain)) {
+								break;
+							}
+						}
+					}
+					brain.isFollowing = true;
+					brain.wasFollowing = true;
+			}
+			else {
+				if (brain.wasFollowing) {
+					playTone(840, 5);
+					playTone(440, 5);
+					playTone(220, 5);
+					playTone(420, 5);
+					playTone(220, 5);
+					playTone(110, 5);
+					brain.wasFollowing = false;
+				}
+				wanderMotion(brain);
+				brain.isFollowing = true;
+				setLEDColor(ledOff);
+				setRobotSpeed(brain.leftMotorSpeed, brain.rightMotorSpeed, 100);
+			}
+		}
+	}
+
+
+}
+
+
