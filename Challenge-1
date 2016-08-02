@@ -1,0 +1,181 @@
+#pragma config(StandardModel, "EV3_REMBOT")
+#pragma config(Sensor, S1,     Touch1,          sensorEV3_Touch)	//left sensor
+#pragma config(Sensor, S4,     Touch2,          sensorEV3_Touch)	//right sensor
+
+#define Speed 35
+
+/*Call this when we want to do a simple backup, when we do a single left or right bump
+ * param backupTime: the time (milliseconds) to backup*/
+void backup(int backupTime) {
+	clearTimer(T1);
+	setMotorSpeed(leftMotor, 0);
+	setMotorSpeed(rightMotor, 0);
+
+	//for the specified time, backup the robot (reverse the forward speed)
+	while (time1[T1] < backupTime) {
+		setMotorSpeed(leftMotor, -Speed);
+		setMotorSpeed(rightMotor, -Speed);
+	}
+	setMotorSpeed(leftMotor, 0);
+	setMotorSpeed(rightMotor, 0);
+}
+
+/*Turn the robot to the right (in place) by setting the left motor and stopping the right
+ *param turnTime: the time (milliseconds) to turn.*/
+void turnRight(int turnTime) {
+	setMotorSpeed(leftMotor, 0);
+	setMotorSpeed(rightMotor, 0);
+	clearTimer(T1);
+
+	//For the specified time, turn the robot
+	while (time1[T1] < turnTime) {
+		setMotorSpeed(leftMotor, Speed);
+	}
+
+	setMotorSpeed(leftMotor, 0);
+
+}
+
+/*Turn the robot to the left (in place) by setting the right motor and stopping the left
+ *param turnTime: the time (milliseconds) to turn.*/
+void turnLeft(int turnTime) {
+	setMotorSpeed(leftMotor, 0);
+	setMotorSpeed(rightMotor, 0);
+	clearTimer(T1);
+
+	//For the specified time, turn the robot
+	while (time1[T1] < turnTime) {
+		setMotorSpeed(rightMotor, Speed);
+	}
+
+	setMotorSpeed(rightMotor, 0);
+}
+
+/*Call this when both bumpers are pressed at the same time or both are pressed within 2 seconds*/
+void backupRandom() {
+	//make a sound
+	playSound(soundDownwardTones);
+
+		//back up
+		backup(1000);
+
+		//pause for two seconds
+		setMotorSpeed(leftMotor, 0);
+		setMotorSpeed(rightMotor, 0);
+		sleep(2000);
+
+		//turn in a random direction
+		int randDirection = random(2);
+		if (randDirection == 1) {
+			//turn left
+			turnLeft(1000);
+		} else {
+			//turn right
+			turnRight(1000);
+		}
+}
+
+/*This method is called when we want to check if one or both of the bumpers have been pressed.
+ * Param lastBumped: the value of the last bumper that was pressed, 1 = left, 2 = right, 3 = both
+ * return last bumper pressed*/
+int detectBump(int lastBumped) {
+	//if either bumper was pressed, wait to see if the other one will be
+	if (SensorValue[Touch1] || SensorValue[Touch2]) {
+		sleep(200);
+	}
+	//if both are pressed, send to backupRandom
+	if (SensorValue[Touch1] && SensorValue[Touch2]) {
+			backupRandom();
+
+			return 3;	//return 3 for both bumpers last bumped
+	//if left sensor is pressed
+	} else if (SensorValue[Touch1]) {
+		//if if right bumper was pressed within 2 seconds ago, send to backupRandom
+		if (lastBumped == 2 && time1[T2] < 2000) {
+				backupRandom();
+		} else {
+			backup(1000);
+			clearTimer(T2);
+			turnRight(500);
+
+			return 1;//return 1 for left sensor last bumped
+		}
+	//if right sensor was pressed
+	}	else if (SensorValue[Touch2]) {
+		//if if left bumper was pressed within 2 seconds ago, send to backupRandom
+		if (lastBumped == 1 && time1[T2] < 2000) {
+			backupRandom();
+		} else {
+			backup(1000);
+			clearTimer(T2);
+			turnLeft(500);
+
+			return 2;	//return 2 for right sensor last bumped
+		}
+	}
+	return lastBumped;	//if no bumper was pressed, return the given value
+}
+
+task main() {
+	//forever loop
+	while(1) {
+
+		clearTimer(T1);
+		clearTimer(T2);
+
+		//set all variables
+		int lastBumped = 0;
+		int runtime = random(4000) + 2000;
+		int turnTime = random(2000)+ 1000;
+		int leftMotorSpeed = random(Speed - 20) + 10;
+		int rightMotorSpeed = random(Speed - 20) + 10;
+		//We're using this so that the two motor speeds are different enough to actually get a good turn
+		while(abs(leftMotorSpeed - rightMotorSpeed) <= 10) {	//don't let speeds be within 10 percent power
+			leftMotorSpeed = random(Speed - 20) + 10;
+			rightMotorSpeed = random(Speed - 20) + 10;
+		}
+
+		//go in a straight line for a random amount of time
+		while (time1[T1] < runtime) {
+			setMotorSpeed(leftMotor, Speed);		//Set the leftMotor (motor1) to quarter power (25)
+			setMotorSpeed(rightMotor, Speed);  //Set the rightMotor (motor6) to quarter power (25)
+
+			//sense when one of the bumpers gets depressed
+			lastBumped = detectBump(lastBumped);
+		}
+
+		//turn the robot in some direction, "wander"
+		clearTimer(T1);
+		lastBumped = 0;
+		//while turnTime is within the limit and we haven't bumped into anything, continue turning
+		while(time1[T1] < turnTime && lastBumped == 0) {
+			setMotorSpeed(leftMotor, leftMotorSpeed);
+			setMotorSpeed(rightMotor, rightMotorSpeed);
+
+			lastBumped = detectBump(lastBumped);
+		}
+
+		//go in a straight line for a (different) random amount of time again after first turn
+		clearTimer(T1);
+		runtime = random(4000) + 2000;
+		while (time1[T1] < runtime) {
+			setMotorSpeed(leftMotor, Speed);		//Set the leftMotor (motor1) to half power (50)
+			setMotorSpeed(rightMotor, Speed);  //Set the rightMotor (motor6) to half power (50)
+
+			//sense when one of the bumpers gets depressed
+			lastBumped = detectBump(lastBumped);
+		}
+
+		//turn the robot in the opposite direction that it went before,
+		//for a different random time
+		turnTime = random(3000)+ 1000;
+		clearTimer(T1);
+		lastBumped = 0;
+		while(time1[T1] < turnTime && lastBumped == 0) {
+			setMotorSpeed(leftMotor, rightMotorSpeed);
+			setMotorSpeed(rightMotor, leftMotorSpeed);
+
+			lastBumped = detectBump(lastBumped);
+		}
+	}
+}
